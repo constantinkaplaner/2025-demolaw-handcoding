@@ -3,13 +3,12 @@ import pandas as pd
 import os
 from datetime import datetime
 import html
-import hashlib
+import re  # for safe filename
 
 st.set_page_config(page_title="Legal Text Annotator", layout="wide")
 
-# === Constants ===
+# === Constants (data input is shared; output is per-coder) ===
 DATA_FILE = "sample_mapped.csv"
-SAVE_FILE = "validation.csv"
 
 TEXT_COLUMN = "gpt_input_text"
 ID_COLUMN = "celex_number"
@@ -65,7 +64,7 @@ for fld in VERIFIED_FIELDS:
     VERIFICATION_META_COLUMNS.extend([f"{fld} (found)", f"{fld} (correct)"])
 
 ALL_COLUMNS = [INSTANCE_COL] + BASE_COLUMNS + VERIFICATION_META_COLUMNS + ["validated_at"]
-PRIMARY_KEYS = [INSTANCE_COL]  # exactly 1 row per instance
+PRIMARY_KEYS = [INSTANCE_COL]  # one row per instance (per coder file)
 
 # === Helpers ===
 def _s(val, default=""):
@@ -100,6 +99,9 @@ def safe_rerun():
 def html_escape(s: str) -> str:
     return html.escape(_s(s))
 
+def _safe_filename(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "_", s)
+
 # === Styles ===
 st.markdown("""
 <style>
@@ -114,7 +116,7 @@ h1, h2, h3 { margin-bottom: .25rem; }
 .core-body { white-space:pre-wrap; line-height:1.5; font-size:1rem; }
 .badge { display:inline-block; padding:.15rem .4rem; border-radius:8px; background:#eef2ff; border:1px solid #dbe4ff; font-size:12px; }
 
-/* New: tab callout banners */
+/* Tab callout banners */
 .callout {
   margin: 0 0 12px 0;
   padding: 10px 12px;
@@ -139,6 +141,11 @@ st.text_input("Enter your insignia (Coder ID):", key="coder_id", placeholder="e.
 if not st.session_state.coder_id.strip():
     st.info("Please enter your insignia to start annotating.")
     st.stop()
+
+# === Per-coder SAVE_FILE (separate CSV per coder) ===
+SAVE_DIR = "validations"
+os.makedirs(SAVE_DIR, exist_ok=True)
+SAVE_FILE = os.path.join(SAVE_DIR, f"validation_{_safe_filename(st.session_state.coder_id)}.csv")
 
 # === Load Data ===
 @st.cache_data
@@ -249,7 +256,7 @@ def load_saved(path: str, instance_map: dict, pad_width: int) -> pd.DataFrame:
     df = migrate_and_filter(df, instance_map, pad_width, drop_orphans=True)
     return df.reset_index(drop=True)
 
-# Load data
+# Load data (shared)
 try:
     data = load_data(DATA_FILE)
 except Exception as e:
@@ -261,6 +268,8 @@ data[INSTANCE_COL] = data.index.astype(str).str.zfill(PAD_WIDTH)
 
 # Map (celex, article, core) -> padded id for legacy migration
 INSTANCE_MAP = build_instance_map(data, PAD_WIDTH)
+
+# Load current coder's saved file only
 saved_df = load_saved(SAVE_FILE, INSTANCE_MAP, PAD_WIDTH)
 
 # === App State ===
@@ -402,10 +411,40 @@ ensure_state_for_current()
 celex = _s(row.get(ID_COLUMN, ""))
 kp = f"f_{_s(row.get(INSTANCE_COL, ''))}_"
 
-# === Sidebar (progress only) ===
+# === Sidebar (progress + quick navigation) ===
 st.sidebar.title("Progress")
 st.sidebar.write(f"Document {st.session_state.index + 1} / {len(data)}")
 st.sidebar.progress((st.session_state.index + 1) / len(data))
+st.sidebar.caption(f"Your file: {os.path.basename(SAVE_FILE)} · Sidebar navigation does not save.")
+
+# Prev / Next (no save)
+cprev, cnext = st.sidebar.columns(2)
+with cprev:
+    if st.button("⏮ Prev", key="sb_prev"):
+        if st.session_state.index > 0:
+            st.session_state.index -= 1
+            safe_rerun()
+with cnext:
+    if st.button("Next ⏭", key="sb_next"):
+        if st.session_state.index < len(data) - 1:
+            st.session_state.index += 1
+            safe_rerun()
+
+st.sidebar.divider()
+# Jump to (1-based)
+jump_to = st.sidebar.number_input(
+    "Jump to #",
+    min_value=1,
+    max_value=len(data),
+    value=st.session_state.index + 1,
+    step=1,
+    key="sb_jump_to",
+)
+if st.sidebar.button("Go", key="sb_go"):
+    target = int(jump_to) - 1
+    if 0 <= target < len(data):
+        st.session_state.index = target
+        safe_rerun()
 
 # === Card renderer (used for both Law Text and Core Sentence) ===
 def render_card(title_prefix: str, body_text: str, article_suffix: bool = False):
@@ -445,8 +484,6 @@ with st.form("annotation_form", clear_on_submit=False):
     # --- DOCUMENT TAB ---
     with tab_doc:
         st.subheader(f"CELEX: {celex}")
-
-        # What to do (callout)
         st.markdown(
             """<div class="callout info">
             <b>What to do:</b> Compare the <i>Core Sentence</i> with the full <i>Law Text</i>.
@@ -459,7 +496,6 @@ with st.form("annotation_form", clear_on_submit=False):
         left, right = st.columns([1,1], gap="small")
         with left:
             render_card("Core Sentence", _s(row.get(CORE_SENTENCE, "")), article_suffix=True)
-            # Put the correctness control directly under the core sentence
             st.checkbox("Core sentence correctly extracted", key=kp + CORE_SENTENCE + "_correct")
             if not st.session_state.get(kp + CORE_SENTENCE + "_correct", False):
                 st.text_area("Correction for Core Sentence", key=kp + CORE_SENTENCE, height=120)
@@ -477,7 +513,6 @@ with st.form("annotation_form", clear_on_submit=False):
 
     # --- VERIFY TAB (data editor) ---
     with tab_verify:
-        # What to do (callout)
         st.markdown(
             """<div class="callout verify">
             <b>What to do:</b> For each label, leave <i>Correct?</i> checked if the detected value is right.
@@ -519,7 +554,6 @@ with st.form("annotation_form", clear_on_submit=False):
 
     # --- OPS TAB ---
     with tab_ops:
-        # What to do (callout)
         st.markdown(
             """<div class="callout ops">
             <b>What to do:</b> Set the <i>Definition</i>, <i>Delegation</i>, <i>Derogation</i>, and <i>Dilution</i> flags.
@@ -561,7 +595,7 @@ with st.form("annotation_form", clear_on_submit=False):
 
     if save_clicked:
         action = upsert_entry(read_entry_from_state())
-        st.success(f"✅ Entry {action}. Saved to {SAVE_FILE} (1 row per instance).")
+        st.success(f"✅ Entry {action}. Saved to {os.path.basename(SAVE_FILE)} (1 row per instance).")
 
     if next_clicked:
         action = upsert_entry(read_entry_from_state())
@@ -577,8 +611,12 @@ with st.form("annotation_form", clear_on_submit=False):
 
 # === Saved section (outside form) ===
 st.markdown("---")
-with st.expander(f"📄 Saved codings (linked rows: {len(saved_df)} of {len(data)} instances) — click to expand", expanded=False):
-    st.caption("Exactly one row per instance (`__instance_id`). Re-saving the same instance overwrites the previous row.")
+with st.expander(
+    f"📄 Saved codings — {os.path.basename(SAVE_FILE)} "
+    f"(linked rows: {len(saved_df)} of {len(data)} instances) — click to expand",
+    expanded=False
+):
+    st.caption("Exactly one row per instance (`__instance_id`) in *your* file. Re-saving the same instance overwrites your previous row.")
 
     colA, colB, colC = st.columns([1,1,1])
     with colA:
@@ -586,10 +624,10 @@ with st.expander(f"📄 Saved codings (linked rows: {len(saved_df)} of {len(data
     with colB:
         quick_filter = st.text_input("Quick filter (contains…)", value="", placeholder="Search text in any column…")
     with colC:
-        if st.button("🗑️ Reset validation file (start empty)"):
-            saved_df = pd.DataFrame(columns=ALL_COLUMNS)
-            saved_df.to_csv(SAVE_FILE, index=False)
-            st.success("Cleared validation.csv — it is now empty.")
+        if st.button("🗑️ Reset my validation file (start empty)"):
+            empty = pd.DataFrame(columns=ALL_COLUMNS)
+            empty.to_csv(SAVE_FILE, index=False)
+            st.success(f"Cleared {os.path.basename(SAVE_FILE)} — it is now empty.")
             safe_rerun()
 
     show_df = saved_df if not show_current_only else saved_df[saved_df["celex_number"] == celex]
@@ -606,6 +644,6 @@ with st.expander(f"📄 Saved codings (linked rows: {len(saved_df)} of {len(data
     st.download_button(
         "⬇️ Download displayed CSV",
         data=csv_bytes,
-        file_name="validation.csv" if not show_current_only else f"validation_{celex}.csv",
+        file_name=os.path.basename(SAVE_FILE) if not show_current_only else f"{os.path.splitext(os.path.basename(SAVE_FILE))[0]}_{celex}.csv",
         mime="text/csv"
     )
