@@ -496,20 +496,23 @@ with st.form("annotation_form", clear_on_submit=False):
         left, right = st.columns([1,1], gap="small")
         with left:
             render_card("Core Sentence", _s(row.get(CORE_SENTENCE, "")), article_suffix=True)
+            # Multiple core sentence variants indicator (per CELEX + Article)
+            variants = core_sentence_variants_for_current(row)
+            if len(variants) > 1:
+                st.markdown(f'<span class="badge">Multiple core sentences detected: {len(variants)}</span>',
+                            unsafe_allow_html=True)
+                with st.expander("See all detected core sentences for this article"):
+                    for i, v in enumerate(variants, 1):
+                        st.write(f"{i}. {v if len(v) <= 500 else v[:500] + '…'}")
             st.checkbox("Core sentence correctly extracted", key=kp + CORE_SENTENCE + "_correct")
             if not st.session_state.get(kp + CORE_SENTENCE + "_correct", False):
                 st.text_area("Correction for Core Sentence", key=kp + CORE_SENTENCE, height=120)
 
+
         with right:
             render_card("Law Text", _s(row.get(TEXT_COLUMN, "")), article_suffix=False)
 
-        # Multiple core sentence variants indicator (per CELEX + Article)
-        variants = core_sentence_variants_for_current(row)
-        if len(variants) > 1:
-            st.markdown(f'<span class="badge">Multiple core sentences detected: {len(variants)}</span>', unsafe_allow_html=True)
-            with st.expander("See all detected core sentences for this article"):
-                for i, v in enumerate(variants, 1):
-                    st.write(f"{i}. {v if len(v)<=500 else v[:500]+'…'}")
+
 
     # --- VERIFY TAB (data editor) ---
     with tab_verify:
