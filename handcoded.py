@@ -153,7 +153,7 @@ SAVE_DIR = "validations"
 os.makedirs(SAVE_DIR, exist_ok=True)
 SAVE_FILE = os.path.join(
     SAVE_DIR,
-    f"validation_{_safe_filename(st.session_state.coder_id)}_{_safe_filename(selected_dataset_label)}.csv"
+    f"validation_{_safe_filename(st.session_state.coder_id)}.csv"
 )
 
 # --- Subject type unifier ---
